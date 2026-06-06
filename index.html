@@ -228,4 +228,423 @@
                 </div>
 
                 <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                    <div clas
+                    <div class="p-4 bg-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center gap-3">
+                        <div class="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto">
+                            <input type="text" id="cariSiswa" oninput="tampilkanDataAbsensi()" class="w-full sm:w-64 bg-white border border-slate-200 rounded-lg py-1.5 px-3 text-xs focus:outline-none" placeholder="Cari nama siswa...">
+                        </div>
+                        <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                            <button id="btnResetDatabaseMaster" onclick="resetSemuaAbsen()" class="hidden text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 px-3 py-1.5 rounded-lg transition text-rose-600">Reset Database</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto w-full">
+                        <table id="tabelAbsensi" class="w-full border-collapse text-left text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider">
+                                    <th class="p-3.5 pl-6">Stempel Waktu</th><th class="p-3.5">Nama Lengkap Murid</th><th class="p-3.5">Status</th><th class="p-3.5">Akun Pemilik Data (Siswa)</th><th id="thKolomArix" class="hidden p-3.5 pr-6 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 text-slate-700"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div id="toastNotification" class="fixed bottom-5 right-5 bg-slate-900 text-white text-xs font-medium px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 transform translate-y-24 opacity-0 transition-all duration-300 pointer-events-none z-50">
+        <div id="toastIcon" class="w-5 h-5 rounded-md flex items-center justify-center"></div><span id="toastText">Pesan default.</span>
+    </div>
+
+<script>
+    // CORE DATABASE SEED
+    if (!localStorage.getItem('users')) localStorage.setItem('users', JSON.stringify({ 'admin': '123', 'siswa_a': 'kelas', 'budi_salim': 'siswa123' }));
+    if (!localStorage.getItem('absensi')) localStorage.setItem('absensi', JSON.stringify([]));
+    if (!localStorage.getItem('faceTemplates')) localStorage.setItem('faceTemplates', JSON.stringify({}));
+
+    let userSiswaAktif = "";
+    let modelsLoaded = false;
+    let streamRef = null;
+    let targetSiswaRecovery = ""; 
+
+    // LOAD FACE-API MODEL
+    window.addEventListener('DOMContentLoaded', async () => {
+        showToast("Menginisialisasi AI Biometrik Siswa...", "info");
+        try {
+            const MODEL_URL = 'https://raw.githubusercontent.com/vladmandic/face-api/master/model';
+            await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+            modelsLoaded = true;
+            showToast("Sistem Kecerdasan Biometrik Aktif!", "success");
+        } catch (err) {
+            console.error(err);
+            showToast("Koneksi CDN Model Terputus.", "error");
+        }
+    });
+
+    function showToast(message, type = 'success') {
+        const toast = document.getElementById('toastNotification');
+        const iconContainer = document.getElementById('toastIcon');
+        document.getElementById('toastText').innerText = message;
+        iconContainer.className = `w-5 h-5 rounded-md flex items-center justify-center text-white ${type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-rose-500' : 'bg-indigo-500'}`;
+        iconContainer.innerHTML = type === 'success' ? '✓' : type === 'error' ? '✗' : 'i';
+        toast.classList.remove('translate-y-24', 'opacity-0');
+        setTimeout(() => { toast.classList.add('translate-y-24', 'opacity-0'); }, 4000);
+    }
+
+    function gantiHalamanSistem(view) {
+        document.getElementById('authSection').classList.toggle('hidden', view !== 'auth');
+        document.getElementById('dashboardSection').classList.toggle('hidden', view !== 'dashboard');
+    }
+
+    function bukaSubAuth(sub) {
+        document.getElementById('subPageLogin').classList.toggle('hidden', sub !== 'login');
+        document.getElementById('subPageRegister').classList.toggle('hidden', sub !== 'register');
+        document.getElementById('subPageRecovery').classList.toggle('hidden', sub !== 'recovery');
+        document.getElementById('formPasswordBaruContainer').classList.add('hidden');
+        document.getElementById('btnVerifikasiWajahReset').classList.remove('hidden');
+        matikanKamera();
+        resetFormKameraReset();
+    }
+
+    gantiHalamanSistem('auth'); bukaSubAuth('login');
+
+    function prosesRegistrasi() {
+        const user = document.getElementById('regUser').value.trim().toLowerCase();
+        const pass = document.getElementById('regPass').value.trim();
+        if (!user || !pass) return showToast("Form tidak boleh kosong!", "error");
+        if (user === 'admin') return showToast("Tidak dapat mendaftar sebagai admin pusat!", "error");
+        
+        let users = JSON.parse(localStorage.getItem('users'));
+        if (users[user]) return showToast("Username siswa telah terpakai!", "error");
+        users[user] = pass; localStorage.setItem('users', JSON.stringify(users));
+        showToast("Registrasi akun siswa sukses!", "success"); bukaSubAuth('login');
+    }
+
+    function prosesLogin() {
+        const user = document.getElementById('loginUser').value.trim().toLowerCase();
+        const pass = document.getElementById('loginPass').value.trim();
+        let users = JSON.parse(localStorage.getItem('users'));
+
+        if (users[user] && users[user] === pass) {
+            userSiswaAktif = user;
+            document.getElementById('namaPencatatSiswa').innerText = user;
+            const isMaster = userSiswaAktif === 'admin';
+            
+            document.getElementById('badgeOtoritas').innerText = isMaster ? "ADMIN PUSAT" : "SISWA ACCESS";
+            document.getElementById('badgeOtoritas').className = `text-[9px] uppercase font-extrabold tracking-wider px-2 py-0.5 rounded-md ${isMaster ? 'bg-rose-500 text-white' : 'bg-slate-700 text-slate-200'}`;
+            document.getElementById('btnResetDatabaseMaster').classList.toggle('hidden', !isMaster);
+            document.getElementById('thKolomArix').classList.toggle('hidden', !isMaster);
+            document.getElementById('infoKuota').innerText = isMaster ? "Kuota: Unlimited" : "Kuota: 1 Siswa";
+            
+            // Tampilkan panel manajemen pengguna hanya untuk admin
+            document.getElementById('adminUserManagementSection').classList.toggle('hidden', !isMaster);
+
+            gantiHalamanSistem('dashboard'); 
+            tampilkanDataAbsensi();
+            if (isMaster) muatDaftarPenggunaAdmin();
+            
+            showToast(`Halo Siswa ${user}!`, "success");
+        } else {
+            showToast("Kredensial login salah!", "error");
+        }
+    }
+
+    // 🔥 FITUR UTAMA BARU: RENDER DAFTAR PENGGUNA UNTUK ADMIN
+    function muatDaftarPenggunaAdmin() {
+        const container = document.getElementById('daftarPenggunaContainer');
+        container.innerHTML = "";
+        let users = JSON.parse(localStorage.getItem('users')) || {};
+        
+        Object.keys(users).forEach(username => {
+            // Admin pusat tidak bisa menghapus akun dirinya sendiri
+            if (username === 'admin') return;
+
+            container.innerHTML += `
+                <div class="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl hover:border-slate-300 transition">
+                    <div class="flex items-center gap-2.5">
+                        <div class="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600">
+                            <i class="fa-solid fa-user text-xs"></i>
+                        </div>
+                        <div>
+                            <p class="text-xs font-bold text-slate-800">${username}</p>
+                            <p class="text-[10px] text-slate-400 font-mono">Pass Encrypted</p>
+                        </div>
+                    </div>
+                    <button onclick="hapusPenggunaOlehAdmin('${username}')" class="w-7 h-7 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-100 text-rose-600 flex items-center justify-center transition cursor-pointer" title="Hapus pengguna ini">
+                        <i class="fa-regular fa-trash-can text-xs"></i>
+                    </button>
+                </div>
+            `;
+        });
+
+        if (container.children.length === 0) {
+            container.innerHTML = `<p class="text-xs text-slate-400 col-span-full py-2">Belum ada siswa lain yang melakukan pendaftaran.</p>`;
+        }
+    }
+
+    // 🔥 FITUR UTAMA BARU: EKSEKUSI HAPUS PENGGUNA (HANYA ADMIN)
+    function hapusPenggunaOlehAdmin(usernameTarget) {
+        if (userSiswaAktif !== 'admin') return showToast("Pelanggaran Otoritas!", "error");
+        
+        if (confirm(`Apakah Anda yakin ingin menghapus total akun "${usernameTarget}"? Tindakan ini akan menghapus semua log biometrik wajah siswa yang terikat dengannya.`)) {
+            
+            // 1. Hapus dari database user login
+            let users = JSON.parse(localStorage.getItem('users')) || {};
+            if (users[usernameTarget]) {
+                delete users[usernameTarget];
+                localStorage.setItem('users', JSON.stringify(users));
+            }
+
+            // 2. Bersihkan template cetak wajah biometrik yang terikat dengan user ini
+            let faceTemplates = JSON.parse(localStorage.getItem('faceTemplates')) || {};
+            Object.keys(faceTemplates).forEach(key => {
+                if (key.startsWith(usernameTarget + "_")) {
+                    delete faceTemplates[key];
+                }
+            });
+            localStorage.setItem('faceTemplates', JSON.stringify(faceTemplates));
+
+            // 3. Bersihkan log absensi yang dicatat oleh user ini
+            let dataAbsen = JSON.parse(localStorage.getItem('absensi')) || [];
+            dataAbsen = dataAbsen.filter(item => item.petugas !== usernameTarget);
+            localStorage.setItem('absensi', JSON.stringify(dataAbsen));
+
+            // Refresh UI Dashboard
+            muatDaftarPenggunaAdmin();
+            tampilkanDataAbsensi();
+            showToast(`Akun "${usernameTarget}" & seluruh log biometriknya berhasil dihapus!`, "success");
+        }
+    }
+
+    // SAVE ABSEN + AMBIL TEMPLATE WAJAH SISWA
+    async function verifikasiDanSimpan() {
+        const nama = document.getElementById('namaSiswa').value.trim();
+        if (!nama) return showToast("Nama siswa wajib diisi!", "error");
+        if (!modelsLoaded) return showToast("AI belum siap.", "error");
+
+        let dataAbsen = JSON.parse(localStorage.getItem('absensi')) || [];
+        if (userSiswaAktif !== 'admin') {
+            const hasData = dataAbsen.find(item => item.petugas === userSiswaAktif);
+            if (hasData && hasData.siswa.toLowerCase() !== nama.toLowerCase()) {
+                return showToast(`Terikat Aturan! Kuota akun Anda hanya untuk siswa: "${hasData.siswa}"`, "error");
+            }
+        }
+
+        const video = document.getElementById('webcam');
+        const placeholder = document.getElementById('webcamPlaceholder');
+        const btn = document.getElementById('btnSimpanAbsen');
+
+        btn.disabled = true;
+        btn.innerText = "Membuka Sensor Kamera...";
+
+        try {
+            streamRef = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+            video.srcObject = streamRef;
+            video.classList.remove('hidden');
+            placeholder.classList.add('hidden');
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const deteksiFull = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                                             .withFaceLandmarks()
+                                             .withFaceDescriptor();
+
+            matikanKamera();
+            video.classList.add('hidden');
+            placeholder.classList.remove('hidden');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-face-viewfinder text-xs"></i> <span>Pindai Wajah & Simpan Absen</span>';
+
+            if (!deteksiFull) {
+                showToast("Absen Gagal! Wajah siswa tidak terdeteksi.", "error");
+                return;
+            }
+
+            // SIMPAN DATA ABSENSI
+            const sekarang = new Date();
+            const waktuStr = strPad(sekarang.getDate()) + ' ' + sekarang.toLocaleString('id-ID', { month: 'short' }) + ' - ' + strPad(sekarang.getHours()) + ':' + strPad(sekarang.getMinutes());
+            
+            dataAbsen.unshift({
+                id: Date.now(),
+                waktu: waktuStr,
+                siswa: nama,
+                status: document.getElementById('statusAbsen').value,
+                petugas: userSiswaAktif 
+            });
+            localStorage.setItem('absensi', JSON.stringify(dataAbsen));
+
+            let faceTemplates = JSON.parse(localStorage.getItem('faceTemplates')) || {};
+            const keyUnik = userSiswaAktif + "_" + nama.toLowerCase(); 
+            faceTemplates[keyUnik] = Array.from(deteksiFull.descriptor);
+            localStorage.setItem('faceTemplates', JSON.stringify(faceTemplates));
+
+            document.getElementById('namaSiswa').value = "";
+            tampilkanDataAbsensi();
+            if (userSiswaAktif === 'admin') muatDaftarPenggunaAdmin();
+            showToast(`Absen & Cetak Wajah Siswa "${nama}" Berhasil Disimpan!`, "success");
+
+        } catch (err) {
+            console.error(err);
+            showToast("Akses kamera ditolak.", "error");
+            btn.disabled = false;
+            btn.innerHTML = 'Pindai Wajah & Simpan Absen';
+        }
+    }
+
+    // VERIFIKASI WAJAH GUNA LUPA PASSWORD
+    async function verifikasiWajahResetPassword() {
+        const username = document.getElementById('recoverUser').value.trim().toLowerCase();
+        const namaSiswa = document.getElementById('recoverSiswa').value.trim().toLowerCase();
+
+        if (!username || !namaSiswa) return showToast("Isi semua data input pemulihan!", "error");
+        if (!modelsLoaded) return showToast("Model AI sedang memuat...", "info");
+
+        const faceTemplates = JSON.parse(localStorage.getItem('faceTemplates')) || {};
+        const keyTarget = username + "_" + namaSiswa;
+
+        if (!faceTemplates[keyTarget]) {
+            return showToast("Data cetak wajah biometrik tidak ditemukan untuk relasi akun & siswa ini!", "error");
+        }
+
+        const video = document.getElementById('webcamReset');
+        const placeholder = document.getElementById('webcamResetPlaceholder');
+        const btn = document.getElementById('btnVerifikasiWajahReset');
+
+        btn.disabled = true;
+        btn.innerText = "Memindai Wajah Anda...";
+
+        try {
+            streamRef = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+            video.srcObject = streamRef;
+            video.classList.remove('hidden');
+            placeholder.classList.add('hidden');
+
+            await new Promise(resolve => setTimeout(resolve, 2500));
+
+            const deteksiReset = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                                              .withFaceLandmarks()
+                                              .withFaceDescriptor();
+
+            matikanKamera();
+            btn.disabled = false;
+            btn.innerText = "Pindai & Verifikasi Wajah";
+
+            if (!deteksiReset) {
+                resetFormKameraReset();
+                return showToast("Wajah tidak terdeteksi jelas. Coba kembali!", "error");
+            }
+
+            const descriptorTersimpan = new Float32Array(faceTemplates[keyTarget]);
+            const descriptorSekarang = deteksiReset.descriptor;
+            const jarakBiometrik = faceapi.euclideanDistance(descriptorTersimpan, descriptorSekarang);
+
+            if (jarakBiometrik < 0.55) {
+                targetSiswaRecovery = username; 
+                showToast("Otentikasi Wajah Sukses! Silakan ganti password akun siswa Anda.", "success");
+                
+                document.getElementById('formPasswordBaruContainer').classList.remove('hidden');
+                document.getElementById('btnVerifikasiWajahReset').classList.add('hidden');
+                video.classList.add('hidden');
+                placeholder.classList.remove('hidden');
+            } else {
+                resetFormKameraReset();
+                showToast("Verifikasi Gagal! Wajah Anda tidak cocok dengan record absensi nama siswa tersebut.", "error");
+            }
+
+        } catch (err) {
+            console.error(err);
+            showToast("Kamera gagal diakses.", "error");
+            btn.disabled = false;
+        }
+    }
+
+    function simpanPasswordBaru() {
+        const passBaru = document.getElementById('passwordBaru').value.trim();
+        if (passBaru.length < 3) return showToast("Password minimal 3 karakter!", "error");
+
+        let users = JSON.parse(localStorage.getItem('users'));
+        if (users[targetSiswaRecovery]) {
+            users[targetSiswaRecovery] = passBaru;
+            localStorage.setItem('users', JSON.stringify(users));
+            showToast(`Password akun siswa "${targetSiswaRecovery}" sukses diperbarui!`, "success");
+            bukaSubAuth('login');
+            
+            document.getElementById('recoverUser').value = "";
+            document.getElementById('recoverSiswa').value = "";
+            document.getElementById('passwordBaru').value = "";
+        }
+    }
+
+    function resetFormKameraReset() {
+        document.getElementById('webcamReset').classList.add('hidden');
+        document.getElementById('webcamResetPlaceholder').classList.remove('hidden');
+    }
+
+    function matikanKamera() {
+        if (streamRef) {
+            streamRef.getTracks().forEach(track => track.stop());
+            streamRef = null;
+        }
+    }
+
+    function hapusSatuItem(idAbsen) {
+        if (userSiswaAktif !== 'admin') return;
+        let dataAbsen = JSON.parse(localStorage.getItem('absensi')) || [];
+        dataAbsen = dataAbsen.filter(item => item.id !== idAbsen);
+        localStorage.setItem('absensi', JSON.stringify(dataAbsen));
+        tampilkanDataAbsensi();
+        showToast("Log absen dihapus.", "success");
+    }
+
+    function tampilkanDataAbsensi() {
+        const tbody = document.querySelector('#tabelAbsensi tbody'); tbody.innerHTML = "";
+        let dataAbsen = JSON.parse(localStorage.getItem('absensi')) || [];
+        const keyword = document.getElementById('cariSiswa').value.toLowerCase();
+
+        let count = { Total: 0, Hadir: 0, Izin: 0, Sakit: 0, Alpa: 0 };
+        dataAbsen.forEach(item => { count.Total++; if (count[item.status] !== undefined) count[item.status]++; });
+
+        document.getElementById('statTotal').innerText = count.Total;
+        document.getElementById('statHadir').innerText = count.Hadir;
+        document.getElementById('statIzin').innerText = count.Izin;
+        document.getElementById('statSakit').innerText = count.Sakit;
+        document.getElementById('statAlpa').innerText = count.Alpa;
+
+        document.getElementById('barHadir').style.height = count.Total > 0 ? `${(count.Hadir / count.Total) * 100}%` : '0%';
+        document.getElementById('barIzin').style.height = count.Total > 0 ? `${(count.Izin / count.Total) * 100}%` : '0%';
+        document.getElementById('barSakit').style.height = count.Total > 0 ? `${(count.Sakit / count.Total) * 100}%` : '0%';
+        document.getElementById('barAlpa').style.height = count.Total > 0 ? `${(count.Alpa / count.Total) * 100}%` : '0%';
+
+        let filtered = dataAbsen.filter(item => item.siswa.toLowerCase().includes(keyword));
+        if (filtered.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-400">Tidak ada riwayat absensi siswa.</td></tr>`; return;
+        }
+
+        filtered.forEach(data => {
+            tbody.innerHTML += `<tr class="border-b border-slate-100 text-[11px]">
+                <td class="p-3 pl-6 font-mono text-slate-400">${data.waktu}</td>
+                <td class="p-3 font-bold text-slate-800">${data.siswa}</td>
+                <td class="p-3"><span class="px-2 py-0.5 rounded-full font-bold bg-slate-100">${data.status}</span></td>
+                <td class="p-3 text-slate-500"><i class="fa-regular fa-user-circle mr-1"></i>${data.petugas}</td>
+                ${userSiswaAktif === 'admin' ? `<td class="p-3 text-center"><button onclick="hapusSatuItem(${data.id})" class="text-rose-500 cursor-pointer"><i class="fa-regular fa-trash-can"></i></button></td>` : ''}
+            </tr>`;
+        });
+    }
+
+    function resetSemuaAbsen() {
+        if (userSiswaAktif !== 'admin') return;
+        if (confirm("Reset total database & data wajah siswa?")) {
+            localStorage.setItem('absensi', JSON.stringify([]));
+            localStorage.setItem('faceTemplates', JSON.stringify([]));
+            tampilkanDataAbsensi(); 
+            muatDaftarPenggunaAdmin();
+            showToast("Database & cetak wajah dibersihkan total!", "error");
+        }
+    }
+
+    function logout() { matikanKamera(); userSiswaAktif = ""; gantiHalamanSistem('auth'); showToast("Sesi ditutup.", "info"); }
+    function strPad(n) { return n.toString().padStart(2, '0'); }
+</script>
+</body>
+</html>
